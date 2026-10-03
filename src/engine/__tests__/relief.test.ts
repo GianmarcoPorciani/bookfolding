@@ -1,6 +1,6 @@
 // Profilo del taglio per la vista 3D.
 import { describe, expect, it } from 'vitest';
-import { edgeAt } from '../relief';
+import { edgeAt, foldFlaps } from '../relief';
 import { DEFAULT_OPTIONS, type Pattern, type PageEntry, type Method } from '../types';
 
 const page = (marks: [number, 'cut' | 'fold'][]): PageEntry => ({
@@ -48,5 +48,18 @@ describe('profilo 3D', () => {
   it('pagina saltata resta piena', () => {
     const p = pat('shadow', page([]));
     expect(edgeAt(p, 0, 10, r)).toBe(14);
+  });
+});
+
+describe('lembi piegati', () => {
+  it('cut & fold: un rettangolo per coppia di tagli', () => {
+    const p = pat('inverted', page([[5, 'cut'], [10, 'cut']]));
+    expect(foldFlaps(p, 0, r)).toEqual([[[10, 5], [12, 5], [12, 10], [10, 10]]]);
+  });
+  it('MMF: triangoli a 45° in alto e in basso', () => {
+    const p = pat('mmf', page([[5, 'fold'], [15, 'fold']]));
+    const [top, bottom] = foldFlaps(p, 0, r);
+    expect(top).toEqual([[14, 5], [9, 0], [9, 5]]);
+    expect(bottom).toEqual([[14, 15], [8, 21], [8, 15]]);
   });
 });

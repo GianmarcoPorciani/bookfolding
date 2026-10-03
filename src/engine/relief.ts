@@ -83,3 +83,75 @@ export function edgeAt(p: Pattern, idx: number, y: number, r: ReliefParams): num
       return W;
   }
 }
+
+/** Poligono di un lembo piegato, in coordinate (r dal dorso, y dal bordo alto), cm. */
+export type Flap = [number, number][];
+
+/**
+ * Lembi di carta ripiegati sulla pagina: nel cut & fold il tratto tagliato si
+ * ripiega verso l'interno (rettangolo largo quanto la profondità), nell'MMF e
+ * nelle pieghe esterne del comby l'angolo si ripiega a triangolo a 45°.
+ */
+export function foldFlaps(p: Pattern, idx: number, r: ReliefParams): Flap[] {
+  const W = r.pageWidthCm;
+  const H = p.book.heightCm;
+  const D = Math.min(r.depthCm, W / 2);
+  const e = p.pages[idx];
+  if (!e || !e.marks.length) return [];
+  const m = e.marks;
+  const rect = (a: number, b: number, d: number): Flap => {
+    const r0 = Math.max(0, W - 2 * d);
+    const r1 = W - d;
+    return [
+      [r0, a],
+      [r1, a],
+      [r1, b],
+      [r0, b],
+    ];
+  };
+  const topTri = (a: number): Flap => [
+    [W, a],
+    [Math.max(0, W - a), 0],
+    [Math.max(0, W - a), a],
+  ];
+  const bottomTri = (b: number): Flap => [
+    [W, b],
+    [Math.max(0, W - (H - b)), H],
+    [Math.max(0, W - (H - b)), b],
+  ];
+  const ps = pairs(m);
+  switch (p.method) {
+    case 'inverted':
+    case 'shadow':
+    case 'twotone':
+      return ps.map(([a, b]) => rect(a, b, D));
+    case 'embossed': {
+      const out: Flap[] = [];
+      let y = 0;
+      for (const [a, b] of ps) {
+        if (a > y) out.push(rect(y, a, D));
+        y = b;
+      }
+      if (y < H) out.push(rect(y, H, D));
+      return out;
+    }
+    case 'multilayer':
+      return ps.map(([a, b], k) => {
+        const code = m[k * 2].layer;
+        const li = p.options.layers.findIndex((l) => l.code === code);
+        const layer = p.options.layers[li];
+        const d = layer?.depthCm ?? D * ((li + 1) / Math.max(1, p.options.layers.length));
+        return rect(a, b, Math.min(d, W / 2));
+      });
+    case 'mmf':
+    case 'mmf-multi':
+      return [topTri(m[0].pos), bottomTri(m[m.length - 1].pos)];
+    case 'combi': {
+      const out: Flap[] = [topTri(m[0].pos), bottomTri(m[m.length - 1].pos)];
+      for (let i = 0; i + 1 < ps.length; i++) out.push(rect(ps[i][1], ps[i + 1][0], D));
+      return out;
+    }
+    default:
+      return [];
+  }
+}
