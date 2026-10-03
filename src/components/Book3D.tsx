@@ -4,7 +4,6 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
@@ -97,10 +96,59 @@ function layoutFor(N: number, openingDeg: number, thicknessCm = 0.01): Layout {
   return { roots, angles, spineWidth };
 }
 
+type V3 = [number, number, number];
+
+/** Raccoglie triangoli con colore e normale espliciti, orientati verso l'esterno. */
+class Mesher {
+  pos: number[] = [];
+  nor: number[] = [];
+  col: number[] = [];
+  /**
+   * Quadrilatero q0 q1 q2 q3 (q0-q1 in alto, q2-q3 in basso) con la faccia
+   * visibile dal lato `outward`; `shade` è la normale usata per la luce.
+   */
+  quad(q: V3[], outward: V3, shade: V3, c: THREE.Color) {
+    const e1 = [q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2]];
+    const e2 = [q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2]];
+    const cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    const flip = cr[0] * outward[0] + cr[1] * outward[1] + cr[2] * outward[2] < 0;
+    const order = flip ? [0, 2, 1, 2, 3, 1] : [0, 1, 2, 2, 1, 3];
+    for (const k of order) {
+      this.pos.push(...q[k]);
+      this.nor.push(...shade);
+      this.col.push(c.r, c.g, c.b);
+    }
+  }
+  tri(t: V3[], outward: V3, shade: V3, c: THREE.Color) {
+    const e1 = [t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]];
+    const e2 = [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]];
+    const cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    const flip = cr[0] * outward[0] + cr[1] * outward[1] + cr[2] * outward[2] < 0;
+    for (const k of flip ? [0, 2, 1] : [0, 1, 2]) {
+      this.pos.push(...t[k]);
+      this.nor.push(...shade);
+      this.col.push(c.r, c.g, c.b);
+    }
+  }
+  geometry() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+    const uv: number[] = [];
+    for (let k = 0; k < this.pos.length; k += 3) uv.push(this.pos[k + 2] * 0.15, this.pos[k + 1] * 0.15);
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    return g;
+  }
+}
+
+const UP: V3 = [0, 1, 0];
+const DOWN: V3 = [0, -1, 0];
+
 /**
  * Pagine e lembi in due geometrie (vertex color per la sfumatura di ogni foglio).
- * Ogni foglio è un solido sottile: due facce, il bordo del taglio e i gradini
- * orizzontali dove la sporgenza cambia (i tagli), con lo spessore reale della carta.
+ * Ogni foglio è un solido sottile chiuso: due facce, il bordo del taglio e i
+ * gradini orizzontali dove la sporgenza cambia (i tagli), con lo spessore reale.
  */
 function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: number) {
   const N = p.pages.length;
@@ -108,33 +156,25 @@ function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: numb
   const steps = Math.max(60, Math.round(H / 0.05));
   const dy = H / steps;
   const half = thicknessCm / 2;
-  const pages: number[] = [];
-  const pagesCol: number[] = [];
-  const flaps: number[] = [];
-  const flapsCol: number[] = [];
+  const pages = new Mesher();
+  const flaps = new Mesher();
   const rand = rng(1234);
   const tint = new THREE.Color();
-  const edgeTint = new THREE.Color();
-  // punto della pagina i a distanza rr dal dorso, altezza y, spostato di off lungo la normale
-  const P = (i: number, rr: number, y: number, off = 0): [number, number, number] => {
+  const P = (i: number, rr: number, y: number, off = 0): V3 => {
     const a = L.angles[i];
     return [L.roots[i] + Math.sin(a) * rr + Math.cos(a) * off, H / 2 - y, Math.cos(a) * rr - Math.sin(a) * off];
   };
-  const quad = (out: number[], cols: number[], q: [number, number, number][], c: THREE.Color) => {
-    for (const idx of [0, 1, 2, 2, 1, 3]) {
-      out.push(...q[idx]);
-      cols.push(c.r, c.g, c.b);
-    }
-  };
   for (let i = 0; i < N; i++) {
+    const a = L.angles[i];
+    const n: V3 = [Math.cos(a), 0, -Math.sin(a)];
+    const nNeg: V3 = [-n[0], 0, -n[2]];
+    const radial: V3 = [Math.sin(a), 0, Math.cos(a)];
     // ogni foglio ha una tinta leggermente diversa: crea le righe sottili del taglio
     const v = 0.9 + rand() * 0.1;
     const warm = rand() * 0.04;
     tint.setRGB(PAPER.r * v, PAPER.g * v * (1 - warm * 0.3), PAPER.b * v * (1 - warm));
-    edgeTint.copy(tint).multiplyScalar(0.94);
     const R: number[] = [];
     for (let k = 0; k <= steps; k++) R.push(edgeAt(p, i, Math.min(H - 1e-6, k * dy), r));
-    // tratti a sporgenza costante
     const segs: { y0: number; y1: number; rr: number }[] = [];
     let start = 0;
     for (let k = 1; k <= steps; k++) {
@@ -145,44 +185,32 @@ function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: numb
     }
     segs.forEach((sg, j) => {
       const { y0, y1, rr } = sg;
-      // due facce del foglio
-      for (const off of [half, -half]) quad(pages, pagesCol, [P(i, 0, y0, off), P(i, rr, y0, off), P(i, 0, y1, off), P(i, rr, y1, off)], tint);
+      // facce del foglio
+      pages.quad([P(i, 0, y0, half), P(i, rr, y0, half), P(i, 0, y1, half), P(i, rr, y1, half)], n, n, tint);
+      pages.quad([P(i, 0, y0, -half), P(i, rr, y0, -half), P(i, 0, y1, -half), P(i, rr, y1, -half)], nNeg, nNeg, tint);
       // bordo del taglio
-      quad(pages, pagesCol, [P(i, rr, y0, half), P(i, rr, y0, -half), P(i, rr, y1, half), P(i, rr, y1, -half)], edgeTint);
-      // gradino in alto (inizio pagina o cambio di sporgenza)
+      pages.quad([P(i, rr, y0, half), P(i, rr, y0, -half), P(i, rr, y1, half), P(i, rr, y1, -half)], radial, radial, tint);
+      // gradino in alto: rivolto verso l'alto se il tratto sotto sporge di più
       const prev = j === 0 ? 0 : segs[j - 1].rr;
       if (prev !== rr) {
         const r0 = Math.min(prev, rr);
         const r1 = Math.max(prev, rr);
-        quad(pages, pagesCol, [P(i, r0, y0, half), P(i, r1, y0, half), P(i, r0, y0, -half), P(i, r1, y0, -half)], edgeTint);
+        const up = rr > prev;
+        pages.quad([P(i, r0, y0, half), P(i, r1, y0, half), P(i, r0, y0, -half), P(i, r1, y0, -half)], up ? UP : DOWN, up ? UP : DOWN, tint);
       }
       if (j === segs.length - 1)
-        quad(pages, pagesCol, [P(i, 0, y1, half), P(i, rr, y1, half), P(i, 0, y1, -half), P(i, rr, y1, -half)], edgeTint);
+        pages.quad([P(i, 0, y1, half), P(i, rr, y1, half), P(i, 0, y1, -half), P(i, rr, y1, -half)], DOWN, DOWN, tint);
     });
-    // lembi ripiegati: appoggiati alla faccia del foglio
+    // lembi ripiegati: appoggiati alla faccia del foglio rivolta verso chi guarda
     const flapTint = tint.clone().multiplyScalar(0.96);
+    const side = n[2] >= 0 ? 1 : -1;
+    const out = side > 0 ? n : nNeg;
     for (const poly of foldFlaps(p, i, r)) {
-      const pts = poly.map(([rr, y]) => P(i, rr, y, half + Math.max(thicknessCm, 0.004)));
-      for (let t = 1; t + 1 < pts.length; t++) {
-        for (const pt of [pts[0], pts[t], pts[t + 1]]) {
-          flaps.push(...pt);
-          flapsCol.push(flapTint.r, flapTint.g, flapTint.b);
-        }
-      }
+      const pts = poly.map(([rr, y]) => P(i, rr, y, side * (half + Math.max(thicknessCm, 0.004))));
+      for (let t = 1; t + 1 < pts.length; t++) flaps.tri([pts[0], pts[t], pts[t + 1]], out, out, flapTint);
     }
   }
-  const mk = (pos: number[], col: number[]) => {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    // coordinate UV per la trama della carta (proiezione semplice)
-    const uv: number[] = [];
-    for (let k = 0; k < pos.length; k += 3) uv.push(pos[k + 2] * 0.15, pos[k + 1] * 0.15);
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    g.computeVertexNormals();
-    return g;
-  };
-  return { pages: mk(pages, pagesCol), flaps: mk(flaps, flapsCol) };
+  return { pages: pages.geometry(), flaps: flaps.geometry() };
 }
 
 interface Three {
@@ -195,8 +223,10 @@ interface Three {
   ground: THREE.Mesh;
   composer: EffectComposer;
   gtao: GTAOPass;
+  aoMaterial: THREE.ShaderMaterial;
   paperTex: THREE.CanvasTexture;
   clothTex: THREE.CanvasTexture;
+  contactTex: THREE.CanvasTexture;
   render: () => void;
 }
 
@@ -226,7 +256,7 @@ export default function Book3D({ pattern }: Props) {
     }
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.12;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -236,23 +266,21 @@ export default function Book3D({ pattern }: Props) {
     scene.background = new THREE.Color(BACKDROP);
     // la nebbia fonde il piano d'appoggio con lo sfondo: nessuna linea d'orizzonte
     scene.fog = new THREE.Fog(BACKDROP, 90, 220);
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    scene.environmentIntensity = 0.55;
+    // luce che dipende solo da quanto una superficie guarda verso l'alto: tutte le facce
+    // verticali delle pagine (a sinistra, a destra e al centro) ricevono la stessa luce
+    scene.add(new THREE.HemisphereLight('#ffffff', '#cfc6b4', 2.3));
 
     const camera = new THREE.PerspectiveCamera(30, 1, 0.5, 600);
     const key = new THREE.DirectionalLight('#fff6e8', 2.4);
     key.castShadow = true;
+    // luce verticale: la camera delle ombre ha bisogno di un 'alto' non parallelo alla direzione
+    key.shadow.camera.up.set(0, 0, -1);
     key.shadow.mapSize.set(2048, 2048);
     key.shadow.bias = -0.0005;
     key.shadow.normalBias = 0.05;
     
     scene.add(key, key.target);
-    const fillL = new THREE.DirectionalLight('#fff1dc', 0.45);
-    fillL.position.set(-50, 15, 20);
-    const fillR = new THREE.DirectionalLight('#e6eeff', 0.45);
-    fillR.position.set(50, 15, 20);
-    scene.add(fillL, fillR);
+
 
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.ShadowMaterial({ opacity: 0.32 }));
     ground.rotation.x = -Math.PI / 2;
@@ -272,13 +300,34 @@ export default function Book3D({ pattern }: Props) {
     gtao.updateGtaoMaterial({ radius: 1.4, distanceExponent: 1.4, thickness: 2.5, scale: 1.2, samples: 24 });
     gtao.updatePdMaterial({ lumaPhi: 4, depthPhi: 1, normalPhi: 1, radius: 12, rings: 3, samples: 24 });
     gtao.blendIntensity = 1;
-    // i fogli si vedono sia di fronte sia dal retro: l'occlusione deve considerare entrambe le facce
-    gtao.normalMaterial.side = THREE.DoubleSide;
+    // l'occlusione usa solo la profondità (normali rivolte alla camera): così pesa allo
+    // stesso modo su facce viste di fronte o di sbieco e al centro non compare la cucitura
+    // il piano d'appoggio viene escluso (discard): l'occlusione riguarda solo il libro
+    const aoMaterial = new THREE.ShaderMaterial({
+      uniforms: { groundY: { value: -1000 } },
+      vertexShader:
+        'varying float vY; void main() { vec4 w = modelMatrix * vec4(position, 1.0); vY = w.y; gl_Position = projectionMatrix * viewMatrix * w; }',
+      fragmentShader:
+        'uniform float groundY; varying float vY; void main() { if (vY < groundY + 0.02) discard; gl_FragColor = vec4(0.5, 0.5, 1.0, 1.0); }',
+      blending: THREE.NoBlending,
+    });
+    gtao.normalMaterial = aoMaterial as unknown as THREE.MeshNormalMaterial;
     composer.addPass(gtao);
     composer.addPass(new OutputPass());
 
     const paperTex = noiseTexture(256, '#ffffff', 8, true);
     const clothTex = noiseTexture(256, '#ffffff', 60, false);
+    // gradiente radiale per l'ombra di contatto
+    const cc = document.createElement('canvas');
+    cc.width = cc.height = 128;
+    const cg = cc.getContext('2d')!;
+    const grad = cg.createRadialGradient(64, 64, 4, 64, 64, 64);
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(0.55, 'rgba(255,255,255,0.45)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    cg.fillStyle = grad;
+    cg.fillRect(0, 0, 128, 128);
+    const contactTex = new THREE.CanvasTexture(cc);
 
     let frame = 0;
     const render = () => {
@@ -290,7 +339,7 @@ export default function Book3D({ pattern }: Props) {
       });
     };
     controls.addEventListener('change', render);
-    three.current = { renderer, scene, camera, controls, book, key, ground, composer, gtao, paperTex, clothTex, render };
+    three.current = { renderer, scene, camera, controls, book, key, ground, composer, gtao, aoMaterial, paperTex, clothTex, contactTex, render };
 
     const resize = () => {
       const w = Math.max(1, el.clientWidth);
@@ -312,7 +361,7 @@ export default function Book3D({ pattern }: Props) {
       target.dispose();
       paperTex.dispose();
       clothTex.dispose();
-      pmrem.dispose();
+      contactTex.dispose();
       renderer.dispose();
       el.removeChild(renderer.domElement);
       three.current = null;
@@ -359,7 +408,7 @@ export default function Book3D({ pattern }: Props) {
     const { pages, flaps } = buildGeometry(pattern, { pageWidthCm: width, depthCm: depth }, L, paperMm / 10);
     const paperMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,
       roughness: 0.88,
       metalness: 0,
       roughnessMap: t.paperTex,
@@ -399,12 +448,33 @@ export default function Book3D({ pattern }: Props) {
     );
     spine.position.z = 0.1;
     spine.castShadow = true;
+    spine.material = clothMat.clone();
+    (spine.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
     t.book.add(spine);
+    // fondo del blocco delle pagine lungo il dorso: chiude la fessura centrale fra i fogli
+    const gutter = new THREE.Mesh(
+      new THREE.BoxGeometry(L.spineWidth + 0.3, H, 0.5),
+      new THREE.MeshStandardMaterial({ color: PAPER.clone().multiplyScalar(0.72), roughness: 0.95 }),
+    );
+    gutter.position.z = -0.2;
+    t.book.add(gutter);
+    // ombra di contatto morbida sotto il ventaglio delle pagine
+    const contact = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({ map: t.contactTex, transparent: true, depthWrite: false, opacity: 0.55, color: '#000000' }),
+    );
+    contact.rotation.x = -Math.PI / 2;
+    const reach = width * Math.max(0.35, Math.sin(Math.min(Math.PI / 2, (opening * Math.PI) / 360)));
+    contact.scale.set(reach * 2.3, width * 1.35, 1);
+    contact.position.set(0, -boardH / 2 + 0.01, width * 0.42);
+    t.book.add(contact);
 
     // il libro poggia sul piano; luce chiave dall'alto a sinistra, ombre inquadrate sul libro
     t.ground.position.y = -boardH / 2;
-    // luce principale frontale dall'alto: illumina allo stesso modo le due metà del libro
-    t.key.position.set(-width * 0.15, H * 3, width * 2.6);
+    t.aoMaterial.uniforms.groundY.value = -boardH / 2;
+    // luce principale dall'alto, appena in avanti e centrata: le facce delle pagine sono
+    // verticali, quindi ricevono la stessa luce a sinistra, a destra e al centro
+    t.key.position.set(0, H * 4, width * 0.3);
     t.key.target.position.set(0, 0, width * 0.3);
     const ext = width + H;
     const sc = t.key.shadow.camera;
