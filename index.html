@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bookfolding – schemi</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/4.2.1/jspdf.umd.min.js" integrity="sha384-qovJwSBbRDPP5cEjCp8S0UP66wrvnjaa60XMOGzTNanrThcrGfXfnZkvgY8N1KT3" crossorigin="anonymous" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js" integrity="sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz" crossorigin="anonymous" defer></script>
+  <script type="module" src="src/app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Bookfolding</h1>
+    <p>Carica il disegno, imposta il libro, scarica lo schema da stampare. La foto resta nel tuo dispositivo.</p>
+  </header>
+
+  <main>
+    <form id="comandi" autocomplete="off">
+      <fieldset>
+        <legend>Disegno</legend>
+        <label class="carica" id="zonaCarica">
+          <input type="file" id="foto" accept="image/*">
+          <span id="testoCarica">Scegli una foto o trascinala qui</span>
+        </label>
+        <label>Nome dello schema <input type="text" id="nome" value="schema"></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Libro</legend>
+        <label>Altezza del libro (cm) <input type="number" id="altezzaCm" value="21" min="1" step="0.5"></label>
+        <label>Numero dell'ultima pagina <input type="number" id="ultimaPagina" value="245" min="1" step="1"></label>
+        <p class="info" id="infoFogli"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Ritaglio della foto (%)</legend>
+        <button type="button" id="autoRitaglio">Togli i bordi bianchi</button>
+        <div class="quattro">
+          <label>Sinistra <input type="number" id="tSinistra" value="0" min="0" max="95" step="0.5"></label>
+          <label>Destra <input type="number" id="tDestra" value="0" min="0" max="95" step="0.5"></label>
+          <label>Sopra <input type="number" id="tSopra" value="0" min="0" max="95" step="0.5"></label>
+          <label>Sotto <input type="number" id="tSotto" value="0" min="0" max="95" step="0.5"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Spazi vuoti nel libro</legend>
+        <div class="quattro">
+          <label>Fogli all'inizio <input type="number" id="fogliVuotiInizio" value="0" min="0" step="1"></label>
+          <label>Fogli alla fine <input type="number" id="fogliVuotiFine" value="0" min="0" step="1"></label>
+          <label>cm sopra <input type="number" id="cmVuotiSopra" value="0" min="0" step="0.5"></label>
+          <label>cm sotto <input type="number" id="cmVuotiSotto" value="0" min="0" step="0.5"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Linee di taglio (verticali)</legend>
+        <label>Larghezza della colonna (cm) <input type="number" id="colonnaCm" value="1" min="0.3" max="5" step="0.1"></label>
+        <div class="quattro">
+          <label>Colore <input type="color" id="colore" value="#e00000"></label>
+          <label>Spessore (mm) <input type="number" id="spessore" value="0.1" min="0.05" max="1" step="0.05"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Stampa</legend>
+        <p class="info" id="infoPagine"></p>
+        <div class="bottoni">
+          <button type="button" id="scaricaPdf" disabled>Scarica PDF</button>
+          <button type="button" id="scaricaExcel" disabled>Scarica Excel</button>
+        </div>
+        <p class="info">Stampa il PDF con <b>Dimensioni effettive / 100%</b>, non "Adatta alla pagina": la prima pagina ha un righello di 10 cm per controllare.</p>
+      </fieldset>
+      <p class="errore" id="errore" role="alert"></p>
+    </form>
+
+    <section id="anteprima">
+      <h2>Tutto il libro</h2>
+      <div class="cornice"><canvas id="panoramica"></canvas></div>
+      <div class="naviga">
+        <button type="button" id="prec" aria-label="Pagina precedente">‹</button>
+        <h2 id="titoloPagina">Pagina da stampare</h2>
+        <button type="button" id="succ" aria-label="Pagina successiva">›</button>
+      </div>
+      <div class="cornice a4"><canvas id="paginaA4"></canvas></div>
+    </section>
+  </main>
+</body>
+</html>
