@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { computePattern, availableSheets } from './engine/pattern';
 import { METHOD_LABELS, type Method, type PatternOptions, type BookSettings, type ShadowMode } from './engine/types';
 import { autoCrop, stripLayout, type StripParams, type CropPercent } from './engine/strips';
@@ -24,7 +24,9 @@ import {
 } from './state';
 import type { DecimalSep } from './engine/format';
 
-type View = 'anteprima' | 'tabella' | 'lavoro';
+type View = 'anteprima' | '3d' | 'tabella' | 'lavoro';
+
+const Book3D = lazy(() => import('./components/Book3D'));
 
 const METHOD_ORDER: Method[] = [
   'inverted',
@@ -692,7 +694,7 @@ export default function App() {
                   </span>
                 </div>
                 <nav className="tabs" aria-label="Vista">
-                  {(['anteprima', 'tabella', 'lavoro'] as View[]).map((v) => (
+                  {(['anteprima', '3d', 'tabella', 'lavoro'] as View[]).map((v) => (
                     <button
                       key={v}
                       type="button"
@@ -700,7 +702,7 @@ export default function App() {
                       aria-pressed={view === v}
                       onClick={() => setView(v)}
                     >
-                      {v === 'anteprima' ? 'Anteprima' : v === 'tabella' ? 'Tabella' : 'Modalità lavoro'}
+                      {v === 'anteprima' ? 'Anteprima' : v === '3d' ? '3D' : v === 'tabella' ? 'Tabella' : 'Modalità lavoro'}
                     </button>
                   ))}
                 </nav>
@@ -731,6 +733,11 @@ export default function App() {
                     <img src={imgA.dataUrl} alt="Immagine di partenza" />
                   </div>
                 </>
+              )}
+              {view === '3d' && (
+                <Suspense fallback={<p className="muted">Carico la vista 3D…</p>}>
+                  <Book3D pattern={pattern} />
+                </Suspense>
               )}
               {view === 'tabella' && (
                 <Table

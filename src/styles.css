@@ -835,3 +835,27 @@ input.color-wide {
   border-radius: var(--radius-s);
   background: var(--surface);
 }
+
+/* Vista 3D */
+.book3d-view {
+  width: 100%;
+  height: clamp(320px, 58vw, 620px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+  touch-action: none;
+}
+
+.book3d-view canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.book3d-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.5rem 1.25rem;
+  align-items: end;
+  margin-top: 0.9rem;
+}
