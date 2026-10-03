@@ -1,7 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { computePattern, availableSheets } from './engine/pattern';
 import { METHOD_LABELS, type Method, type PatternOptions, type BookSettings, type ShadowMode } from './engine/types';
-import { stripLayout } from './engine/strips';
+import { autoCrop, stripLayout, type StripParams, type CropPercent } from './engine/strips';
 import { ImageDrop } from './components/ImageDrop';
 import { Layers } from './components/Layers';
 import { Preview } from './components/Preview';
@@ -15,6 +15,7 @@ import {
   downloadBlob,
   loadLast,
   loadProfile,
+  normalizeStrip,
   safeFileName,
   saveLast,
   saveProfile,
@@ -64,7 +65,7 @@ export default function App() {
   const [options, setOptions] = useState<PatternOptions>(initial.options);
   const [meta, setMeta] = useState<Meta>(initial.meta);
   const [decimalSep, setDecimalSep] = useState<DecimalSep>(initial.decimalSep);
-  const [stripWidthCm, setStripWidthCm] = useState(initial.stripWidthCm);
+  const [strip, setStrip] = useState<StripParams>(initial.strip);
   const [imgA, setImgA] = useState<LoadedImage | null>(null);
   const [imgB, setImgB] = useState<LoadedImage | null>(null);
   const [view, setView] = useState<View>('anteprima');
@@ -87,11 +88,11 @@ export default function App() {
       options,
       meta,
       decimalSep,
-      stripWidthCm,
+      strip,
       imageA: imgA ? { name: imgA.name, dataUrl: imgA.dataUrl } : undefined,
       imageB: imgB ? { name: imgB.name, dataUrl: imgB.dataUrl } : undefined,
     }),
-    [book, options, meta, decimalSep, stripWidthCm, imgA, imgB],
+    [book, options, meta, decimalSep, strip, imgA, imgB],
   );
 
   useEffect(() => {
@@ -126,6 +127,23 @@ export default function App() {
     return computePattern(imgA.raster, deferredBook, deferredOptions);
   }, [imgA, deferredBook, deferredOptions, isStrip]);
 
+  const stripResult = useMemo(() => {
+    if (!imgA || !isStrip) return null;
+    try {
+      return {
+        layout: stripLayout(imgA.raster, book, {
+          sheets: options.widthMode === 'sheets' ? options.sheets : undefined,
+          emptyStart: strip.emptyStart,
+          emptyEnd: strip.emptyEnd,
+          crop: strip.crop,
+        }),
+        error: '',
+      };
+    } catch (e) {
+      return { layout: null, error: (e as Error).message };
+    }
+  }, [imgA, isStrip, book, options.widthMode, options.sheets, strip.emptyStart, strip.emptyEnd, strip.crop]);
+
   const layerColors = useMemo(
     () => (options.method === 'multilayer' ? layerColorMap(options.layers) : undefined),
     [options.method, options.layers],
@@ -133,6 +151,8 @@ export default function App() {
 
   const setOpt = <K extends keyof PatternOptions>(k: K, v: PatternOptions[K]) => setOptions((o) => ({ ...o, [k]: v }));
   const setBk = <K extends keyof BookSettings>(k: K, v: BookSettings[K]) => setBook((b) => ({ ...b, [k]: v }));
+  const setSt = <K extends keyof StripParams>(k: K, v: StripParams[K]) => setStrip((x) => ({ ...x, [k]: v }));
+  const setCrop = (k: keyof CropPercent, v: number) => setStrip((x) => ({ ...x, crop: { ...x.crop, [k]: v } }));
   const setMt = <K extends keyof Meta>(k: K, v: Meta[K]) => setMeta((m) => ({ ...m, [k]: v }));
 
   const N = availableSheets(book);
@@ -164,13 +184,13 @@ export default function App() {
       let blob: Blob;
       if (isStrip) {
         if (options.method === 'lenticular' && !imgB) throw new Error("Per il lenticolare carica anche l'immagine B.");
-        const layout = stripLayout(imgA.raster, book, options.widthMode === 'sheets' ? options.sheets : undefined);
+        if (!stripResult?.layout) throw new Error(stripResult?.error || 'Controlla le impostazioni delle strisce.');
         blob = await stripPdf(
           options.method as 'strip' | 'lenticular',
           { a: imgA.raster, aUrl: imgA.dataUrl, b: imgB?.raster, bUrl: imgB?.dataUrl },
-          layout,
+          stripResult.layout,
           book.heightCm,
-          stripWidthCm,
+          strip,
           m,
           book,
         );
@@ -180,6 +200,30 @@ export default function App() {
       }
       downloadBlob(blob, `${safeFileName(m.title)}.pdf`);
       setMessage('PDF scaricato.');
+    } catch (e) {
+      setMessage((e as Error).message);
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const exportExcel = async () => {
+    if (!imgA || !stripResult?.layout) return;
+    setBusy('Preparo il file Excel…');
+    setMessage('');
+    try {
+      if (options.method === 'lenticular' && !imgB) throw new Error("Per il lenticolare carica anche l'immagine B.");
+      const { stripExcel } = await import('./lib/excel');
+      const blob = await stripExcel(
+        options.method as 'strip' | 'lenticular',
+        { a: imgA.raster, b: imgB?.raster },
+        stripResult.layout,
+        book.heightCm,
+        strip,
+      );
+      const m = await pdfMeta();
+      downloadBlob(blob, `${safeFileName(m.title)}.xlsx`);
+      setMessage('File Excel scaricato.');
     } catch (e) {
       setMessage((e as Error).message);
     } finally {
@@ -201,7 +245,7 @@ export default function App() {
       setOptions({ ...DEFAULT_PROJECT.options, ...p.options });
       setMeta({ ...DEFAULT_PROJECT.meta, ...p.meta });
       setDecimalSep(p.decimalSep ?? ',');
-      setStripWidthCm(p.stripWidthCm ?? 1.5);
+      setStrip(normalizeStrip(p));
       setImgA(p.imageA ? await dataUrlToRaster(p.imageA.dataUrl, p.imageA.name) : null);
       setImgB(p.imageB ? await dataUrlToRaster(p.imageB.dataUrl, p.imageB.name) : null);
       setMessage(`Progetto "${file.name}" aperto.`);
@@ -230,6 +274,11 @@ export default function App() {
           <button type="button" className="secondary" onClick={saveProject} disabled={!imgA}>
             Salva progetto
           </button>
+          {isStrip && (
+            <button type="button" className="secondary" onClick={exportExcel} disabled={!stripResult?.layout || !!busy}>
+              Scarica Excel
+            </button>
+          )}
           <button type="button" className="primary" onClick={exportPdf} disabled={!imgA || !!busy}>
             {busy || 'Scarica PDF'}
           </button>
@@ -353,18 +402,127 @@ export default function App() {
           {isStrip ? (
             <section>
               <h2>Strisce</h2>
-              <label className="field">
-                <span className="field-label">Larghezza striscia (cm)</span>
-                <input
-                  type="number"
-                  min={0.5}
-                  step={0.1}
-                  value={stripWidthCm}
-                  onChange={(e) => setStripWidthCm(Math.max(0.3, num(e.target.value, 1.5)))}
-                />
-              </label>
+              <div className="grid2">
+                <label className="field">
+                  <span className="field-label">Larghezza striscia (cm)</span>
+                  <input
+                    type="number"
+                    min={0.3}
+                    step={0.1}
+                    value={strip.widthCm}
+                    onChange={(e) => setSt('widthCm', Math.max(0.3, num(e.target.value, 1.5)))}
+                  />
+                </label>
+                <span />
+                <label className="field">
+                  <span className="field-label">Fogli vuoti all'inizio</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={strip.emptyStart}
+                    onChange={(e) => setSt('emptyStart', Math.max(0, Math.round(num(e.target.value, 0))))}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Fogli vuoti alla fine</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={strip.emptyEnd}
+                    onChange={(e) => setSt('emptyEnd', Math.max(0, Math.round(num(e.target.value, 0))))}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Margine sopra (cm)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={strip.marginTopCm}
+                    onChange={(e) => setSt('marginTopCm', Math.max(0, num(e.target.value, 0)))}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Margine sotto (cm)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={strip.marginBottomCm}
+                    onChange={(e) => setSt('marginBottomCm', Math.max(0, num(e.target.value, 0)))}
+                  />
+                </label>
+              </div>
+              <p className="hint">
+                Con i fogli vuoti a 0 il disegno usa i fogli scelti in "Fogli usati dal disegno", centrato.
+              </p>
+              <span className="field-label">Ritaglio della foto (%)</span>
+              <div className="grid2 crop">
+                {(
+                  [
+                    ['left', 'Sinistra'],
+                    ['right', 'Destra'],
+                    ['top', 'Sopra'],
+                    ['bottom', 'Sotto'],
+                  ] as [keyof CropPercent, string][]
+                ).map(([k, label]) => (
+                  <label className="field" key={k}>
+                    <span className="field-label">{label}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={95}
+                      step={0.5}
+                      value={strip.crop[k]}
+                      onChange={(e) => setCrop(k, Math.min(95, Math.max(0, num(e.target.value, 0))))}
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="row-buttons">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!imgA}
+                  onClick={() => imgA && setSt('crop', autoCrop(imgA.raster))}
+                >
+                  Ritaglio automatico
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setSt('crop', { left: 0, right: 0, top: 0, bottom: 0 })}
+                >
+                  Nessun ritaglio
+                </button>
+              </div>
+              <div className="grid2">
+                <label className="field">
+                  <span className="field-label">Colore linee di taglio</span>
+                  <input
+                    type="color"
+                    className="color-wide"
+                    value={strip.lineColor}
+                    onChange={(e) => setSt('lineColor', e.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Spessore linee (mm)</span>
+                  <input
+                    type="number"
+                    min={0.05}
+                    max={1}
+                    step={0.05}
+                    value={strip.lineWidthMm}
+                    onChange={(e) => setSt('lineWidthMm', Math.min(1, Math.max(0.05, num(e.target.value, 0.2))))}
+                  />
+                </label>
+              </div>
               {options.method === 'lenticular' && (
-                <p className="hint">Metà striscia per l'immagine A e metà per la B, divise dalla linea di piega.</p>
+                <p className="hint">
+                  Metà striscia per l'immagine A e metà per la B, divise dalla linea di piega tratteggiata. Il
+                  ritaglio vale per l'immagine A.
+                </p>
               )}
             </section>
           ) : (
@@ -509,14 +667,18 @@ export default function App() {
             options.method === 'lenticular' && !imgB ? (
               <p className="empty">Carica anche l'immagine B per vedere le strisce lenticolari.</p>
             ) : (
-              <StripPreview
-                kind={options.method as 'strip' | 'lenticular'}
-                a={imgA}
-                b={imgB}
-                book={book}
-                sheets={options.widthMode === 'sheets' ? options.sheets : undefined}
-                stripWidthCm={stripWidthCm}
-              />
+              stripResult?.layout ? (
+                <StripPreview
+                  kind={options.method as 'strip' | 'lenticular'}
+                  a={imgA}
+                  b={imgB}
+                  book={book}
+                  layout={stripResult.layout}
+                  params={strip}
+                />
+              ) : (
+                <p className="error">{stripResult?.error}</p>
+              )
             )
           ) : pattern ? (
             <>

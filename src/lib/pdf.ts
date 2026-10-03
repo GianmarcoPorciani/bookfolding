@@ -2,7 +2,8 @@
 import { jsPDF } from 'jspdf';
 import { fmt, tableRows, type DecimalSep } from '../engine/format';
 import { METHOD_LABELS, type Layer, type Pattern, type RasterImage } from '../engine/types';
-import { a4Grid, type StripLayout } from '../engine/strips';
+import { a4Grid, MAX_STRIP_HEIGHT_CM, type StripLayout, type StripParams } from '../engine/strips';
+import { drawStrips } from './stripRender';
 import { rasterToCanvas } from './raster';
 
 export interface PdfMeta {
@@ -19,7 +20,6 @@ const PAGE_H = 297;
 const M = 12; // margine
 
 const INK: [number, number, number] = [29, 43, 51];
-const CUT: [number, number, number] = [180, 35, 42];
 const FOLD: [number, number, number] = [37, 99, 168];
 const TINT: [number, number, number] = [238, 241, 236];
 
@@ -287,109 +287,124 @@ export async function patternPdf(
   return doc.output('blob');
 }
 
+/** Righello di controllo da 10 cm con tacche millimetriche. */
+function scaleRuler(doc: jsPDF, x0: number, y0: number) {
+  doc.setDrawColor(...INK);
+  doc.setTextColor(...INK);
+  doc.setFontSize(8);
+  doc.setLineWidth(0.3);
+  doc.line(x0, y0, x0 + 100, y0);
+  for (let mm = 0; mm <= 100; mm++) {
+    const h = mm % 10 === 0 ? 6 : mm % 5 === 0 ? 4 : 2;
+    doc.setLineWidth(mm % 10 === 0 ? 0.3 : 0.15);
+    doc.line(x0 + mm, y0, x0 + mm, y0 + h);
+    if (mm % 10 === 0) doc.text(String(mm / 10), x0 + mm, y0 + 10, { align: 'center' });
+  }
+  doc.text('cm', x0 + 106, y0 + 10);
+}
+
+function hexToRgbTuple(h: string): [number, number, number] {
+  return [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
+}
+
 /** PDF di strip art o lenticolare: strisce in scala 1:1 su A4. */
 export async function stripPdf(
   kind: 'strip' | 'lenticular',
   images: { a: RasterImage; aUrl: string; b?: RasterImage; bUrl?: string },
   layout: StripLayout,
   heightCm: number,
-  stripWidthCm: number,
+  params: StripParams,
   meta: PdfMeta,
   book: { firstPage: number; lastPage: number },
 ): Promise<Blob> {
-  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  if (heightCm > MAX_STRIP_HEIGHT_CM)
+    throw new Error(`In scala reale su A4 il libro può essere alto al massimo ${MAX_STRIP_HEIGHT_CM} cm.`);
+  const doc = new jsPDF({ unit: 'mm', format: 'a4', compress: true });
   const imgs: CoverInfo['images'] = [];
   const a = await toPng(images.aUrl);
-  imgs.push({ ...a, caption: kind === 'lenticular' ? 'Immagine A (lato sinistro)' : 'Immagine' });
+  imgs.push({ ...a, caption: kind === 'lenticular' ? 'Immagine A (metà sinistra)' : 'Immagine' });
   if (kind === 'lenticular' && images.bUrl) {
     const b = await toPng(images.bUrl);
-    imgs.push({ ...b, caption: 'Immagine B (lato destro)' });
+    imgs.push({ ...b, caption: 'Immagine B (metà destra)' });
   }
-  const grid = a4Grid(stripWidthCm, heightCm, layout.slices.length);
+  const sep = meta.decimalSep;
+  const grid = a4Grid(params.widthCm, heightCm, layout.slices.length);
+  const sl = layout.slices;
   await cover(doc, meta, {
     method: kind === 'lenticular' ? 'Lenticolare' : 'Strip art',
     rows: [
       ['Tipologia', kind === 'lenticular' ? 'Lenticolare' : 'Strip art'],
-      ['Pagine del libro', `${book.firstPage}–${book.lastPage}`],
-      ['Pagine con striscia', `${layout.slices[0]?.page ?? '-'}–${layout.slices[layout.slices.length - 1]?.page ?? '-'} (${layout.slices.length})`],
-      ['Altezza pagina', `${fmt(heightCm, 1, meta.decimalSep)} cm`],
-      ['Larghezza striscia', `${fmt(stripWidthCm, 1, meta.decimalSep)} cm${kind === 'lenticular' ? ' (metà A, metà B)' : ''}`],
-      ['Fogli A4 da stampare', `${grid.sheets}`],
-      ['Data', new Date().toLocaleDateString('it-IT')],
+      ['Pagine del libro', `${book.firstPage}–${book.lastPage} (${layout.availableSheets} fogli)`],
+      ['Pagine con striscia', `${sl[0]?.page ?? '-'}–${sl[sl.length - 1]?.page ?? '-'} (${sl.length})`],
+      ['Altezza pagina', `${fmt(heightCm, 1, sep)} cm (una tacca = 1 cm)`],
+      ['Margini foto', `${fmt(params.marginTopCm, 1, sep)} cm sopra, ${fmt(params.marginBottomCm, 1, sep)} cm sotto`],
+      ['Larghezza striscia', `${fmt(params.widthCm, 1, sep)} cm${kind === 'lenticular' ? ' (metà A, metà B)' : ''}`],
+      ['Fogli A4 da stampare', `${grid.sheets} (${grid.perRow * grid.rows} strisce per foglio)`],
     ],
     images: imgs,
     howTo: [
-      'Stampa al 100% (scala reale, senza "adatta alla pagina") e controlla con il segmento da 5 cm.',
+      'Stampa con "Dimensioni effettive" / 100%, non "Adatta alla pagina". Il righello qui sotto deve misurare esattamente 10 cm.',
       kind === 'lenticular'
-        ? 'Ritaglia ogni striscia, piegala a metà lungo la linea tratteggiata e incollala sul taglio della pagina indicata: la metà A si vede da un lato, la metà B dall’altro.'
-        : 'Ritaglia ogni striscia lungo le linee verticali e incollala sul taglio della pagina indicata, allineando il bordo alto della striscia al bordo alto della pagina.',
-      'Il righello a sinistra è in centimetri dal bordo alto della pagina.',
+        ? 'Ritaglia ogni striscia lungo le linee continue, piegala a metà sulla linea tratteggiata e incollala sul taglio della pagina indicata: la metà A si vede da un lato, la metà B dall’altro.'
+        : 'Ritaglia ogni striscia lungo le linee e incollala sul taglio della pagina indicata, allineando il bordo alto della striscia al bordo alto della pagina.',
+      'Le tacche a sinistra sono i centimetri dal bordo alto della pagina.',
     ],
   });
+  scaleRuler(doc, M, PAGE_H - 40);
 
-  const pxPerMm = 12; // ~300 dpi
+  const pxPerCm = 100; // ~254 dpi
   const canvA = rasterToCanvas(images.a);
-  const canvB = images.b ? rasterToCanvas(images.b) : null;
-  const stripMm = stripWidthCm * 10;
+  const canvB = images.b ? { img: rasterToCanvas(images.b), width: images.b.width, height: images.b.height } : undefined;
+  const stripMm = params.widthCm * 10;
   const hMm = heightCm * 10;
   const rowH = hMm + 12;
   const x0 = M + 8; // dopo il righello
+  const line = hexToRgbTuple(params.lineColor);
   let idx = 0;
-  while (idx < layout.slices.length) {
+  while (idx < sl.length) {
     doc.addPage();
-    // segmento di controllo da 5 cm
     doc.setDrawColor(...INK);
+    doc.setTextColor(...INK);
     doc.setLineWidth(0.3);
     doc.line(PAGE_W - M - 50, M - 3, PAGE_W - M, M - 3);
     doc.line(PAGE_W - M - 50, M - 4.5, PAGE_W - M - 50, M - 1.5);
     doc.line(PAGE_W - M, M - 4.5, PAGE_W - M, M - 1.5);
     doc.setFontSize(7);
-    doc.setTextColor(...INK);
     doc.text('controllo scala: 5 cm', PAGE_W - M - 25, M - 4.5, { align: 'center' });
     doc.text(meta.title || '', M, M - 3);
-    for (let r = 0; r < grid.rows && idx < layout.slices.length; r++) {
-      const top = M + 5 + r * rowH;
-      const count = Math.min(grid.perRow, layout.slices.length - idx);
-      // immagine della fascia
+    for (let r = 0; r < grid.rows && idx < sl.length; r++) {
+      const top = M + 3 + r * rowH;
+      const count = Math.min(grid.perRow, sl.length - idx);
       const c = document.createElement('canvas');
-      c.width = Math.round(count * stripMm * pxPerMm);
-      c.height = Math.round(hMm * pxPerMm);
+      c.width = Math.max(1, Math.round((count * stripMm * pxPerCm) / 10));
+      c.height = Math.max(1, Math.round(heightCm * pxPerCm));
       const g = c.getContext('2d')!;
-      g.imageSmoothingEnabled = true;
       g.fillStyle = '#fff';
       g.fillRect(0, 0, c.width, c.height);
-      const sw = stripMm * pxPerMm;
-      for (let i = 0; i < count; i++) {
-        const sl = layout.slices[idx + i];
-        if (kind === 'lenticular' && canvB && images.b) {
-          g.drawImage(canvA, sl.x0, 0, sl.x1 - sl.x0, canvA.height, i * sw, 0, sw / 2, c.height);
-          const bx0 = Math.floor((sl.sheet * images.b.width) / layout.usedSheets);
-          const bx1 = Math.max(bx0 + 1, Math.floor(((sl.sheet + 1) * images.b.width) / layout.usedSheets));
-          g.drawImage(canvB, bx0, 0, bx1 - bx0, canvB.height, i * sw + sw / 2, 0, sw / 2, c.height);
-        } else {
-          g.drawImage(canvA, sl.x0, 0, sl.x1 - sl.x0, canvA.height, i * sw, 0, sw, c.height);
-        }
-      }
+      drawStrips(g, kind, { a: canvA, b: canvB }, layout, params, heightCm, idx, idx + count, 0, 0, pxPerCm);
       doc.addImage(c.toDataURL('image/jpeg', 0.9), 'JPEG', x0, top + 5, count * stripMm, hMm);
-      // linee di taglio e numeri
-      doc.setDrawColor(...INK);
-      doc.setLineWidth(0.2);
-      doc.setFontSize(8);
-      for (let i = 0; i <= count; i++) doc.line(x0 + i * stripMm, top + 2, x0 + i * stripMm, top + 5 + hMm + 3);
-      for (let i = 0; i < count; i++) {
-        const sl = layout.slices[idx + i];
-        const cx = x0 + i * stripMm + stripMm / 2;
-        doc.text(String(sl.page), cx, top + 4, { align: 'center' });
-        doc.text(String(sl.page), cx, top + 5 + hMm + 3.5, { align: 'center' });
-        if (kind === 'lenticular') {
-          doc.setLineDashPattern([1, 1], 0);
-          doc.setDrawColor(...CUT);
-          doc.line(cx, top + 5, cx, top + 5 + hMm);
-          doc.setLineDashPattern([], 0);
-          doc.setDrawColor(...INK);
-        }
+      // linee di taglio vettoriali
+      doc.setDrawColor(...line);
+      doc.setLineWidth(params.lineWidthMm);
+      for (let i = 0; i <= count; i++) doc.line(x0 + i * stripMm, top + 5, x0 + i * stripMm, top + 5 + hMm);
+      doc.line(x0, top + 5, x0 + count * stripMm, top + 5);
+      doc.line(x0, top + 5 + hMm, x0 + count * stripMm, top + 5 + hMm);
+      if (kind === 'lenticular') {
+        doc.setLineDashPattern([1, 1], 0);
+        for (let i = 0; i < count; i++) doc.line(x0 + i * stripMm + stripMm / 2, top + 5, x0 + i * stripMm + stripMm / 2, top + 5 + hMm);
+        doc.setLineDashPattern([], 0);
       }
-      // righello in cm
+      // numeri di pagina
+      doc.setFontSize(stripMm < 9 ? 6.5 : 8);
+      doc.setTextColor(...INK);
+      for (let i = 0; i < count; i++) {
+        const cx = x0 + i * stripMm + stripMm / 2;
+        doc.text(String(sl[idx + i].page), cx, top + 4, { align: 'center' });
+        doc.text(String(sl[idx + i].page), cx, top + 5 + hMm + 3.5, { align: 'center' });
+      }
+      // righello in cm, solo nel margine
+      doc.setDrawColor(...INK);
+      doc.setLineWidth(0.15);
       doc.setFontSize(6.5);
       for (let cm = 0; cm <= Math.floor(heightCm); cm++) {
         const yy = top + 5 + cm * 10;

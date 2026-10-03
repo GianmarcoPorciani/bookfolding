@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { computePattern, shadowActive } from '../pattern';
 import { tableRows, fmt, speechFor } from '../format';
-import { stripLayout, a4Grid } from '../strips';
+import { stripLayout, a4Grid, autoCrop, cropRect } from '../strips';
 import { otsu, otsu2, histogram } from '../image';
 import { COLOR_LAYERS, DEFAULT_OPTIONS, type PatternOptions, type RasterImage } from '../types';
 
@@ -204,16 +204,33 @@ describe('soglie automatiche', () => {
 
 describe('strip e lenticolare', () => {
   it('una fetta per foglio', () => {
-    const l = stripLayout({ width: 200 }, { firstPage: 1, lastPage: 21, heightCm: 21 });
+    const l = stripLayout({ width: 200, height: 200 }, { firstPage: 1, lastPage: 21, heightCm: 21 });
     expect(l.slices.length).toBe(11);
     expect(l.slices[0]).toMatchObject({ page: 1, x0: 0 });
     expect(l.slices[10].x1).toBe(200);
   });
   it('impaginazione A4', () => {
     const g = a4Grid(1.5, 21, 144);
-    expect(g.perRow).toBe(12);
+    expect(g.perRow).toBe(11);
     expect(g.rows).toBe(1);
-    expect(g.sheets).toBe(12);
+    expect(g.sheets).toBe(14);
+    expect(a4Grid(1, 21, 10).perRow).toBe(17);
     expect(a4Grid(1.5, 10, 154).rows).toBe(2);
+  });
+  it('fogli vuoti a inizio e fine (come la prima app)', () => {
+    const l = stripLayout({ width: 200, height: 100 }, { firstPage: 1, lastPage: 245, heightCm: 21 }, { emptyStart: 3, emptyEnd: 2 });
+    expect(l.availableSheets).toBe(123);
+    expect(l.usedSheets).toBe(118);
+    expect(l.slices[0].page).toBe(7);
+    expect(l.slices[l.slices.length - 1].page).toBe(241);
+    expect(() =>
+      stripLayout({ width: 200, height: 100 }, { firstPage: 1, lastPage: 9, heightCm: 21 }, { emptyStart: 3, emptyEnd: 2 }),
+    ).toThrow();
+  });
+  it('ritaglio manuale e automatico', () => {
+    expect(cropRect({ width: 200, height: 100 }, { left: 10, right: 10, top: 20, bottom: 0 })).toEqual({ x: 20, y: 20, w: 160, h: 80 });
+    expect(() => cropRect({ width: 200, height: 100 }, { left: 50, right: 50, top: 0, bottom: 0 })).toThrow();
+    const c = autoCrop(image([[50, 40, 149, 159, BLACK]]));
+    expect(c).toEqual({ left: 25, top: 20, right: 25, bottom: 20 });
   });
 });

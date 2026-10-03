@@ -1,6 +1,7 @@
 // Stato dell'applicazione e salvataggio dei progetti.
 import type { DecimalSep } from './engine/format';
 import { DEFAULT_OPTIONS, GRAY_LAYERS, type BookSettings, type PatternOptions } from './engine/types';
+import { DEFAULT_STRIP, type StripParams } from './engine/strips';
 
 export interface Meta {
   title: string;
@@ -16,7 +17,7 @@ export interface Project {
   options: PatternOptions;
   meta: Meta;
   decimalSep: DecimalSep;
-  stripWidthCm: number;
+  strip: StripParams;
   imageA?: { name: string; dataUrl: string };
   imageB?: { name: string; dataUrl: string };
 }
@@ -27,7 +28,7 @@ export const DEFAULT_PROJECT: Project = {
   options: { ...DEFAULT_OPTIONS, layers: GRAY_LAYERS },
   meta: { title: '', author: '', copyright: '', notes: '' },
   decimalSep: ',',
-  stripWidthCm: 1.5,
+  strip: DEFAULT_STRIP,
 };
 
 const PROFILE_KEY = 'piegalibro.profilo';
@@ -75,6 +76,7 @@ export function loadLast(): Project | null {
       ...p,
       options: { ...DEFAULT_OPTIONS, ...p.options },
       meta: { ...DEFAULT_PROJECT.meta, ...p.meta },
+      strip: normalizeStrip(p),
     };
   } catch {
     return null;
@@ -93,4 +95,14 @@ export function downloadBlob(blob: Blob, name: string) {
 
 export function safeFileName(s: string): string {
   return (s || 'schema').replace(/[^\w\-àèéìòù ]+/gi, '').trim().replace(/\s+/g, '_') || 'schema';
+}
+
+/** Parametri delle strisce, compatibili con i progetti salvati prima dell'unione delle app. */
+export function normalizeStrip(p: Partial<Project> & { stripWidthCm?: number }): StripParams {
+  return {
+    ...DEFAULT_STRIP,
+    ...(p.strip ?? {}),
+    crop: { ...DEFAULT_STRIP.crop, ...(p.strip?.crop ?? {}) },
+    widthCm: p.strip?.widthCm ?? p.stripWidthCm ?? DEFAULT_STRIP.widthCm,
+  };
 }

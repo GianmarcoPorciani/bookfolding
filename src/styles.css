@@ -809,3 +809,29 @@ table.scheme {
     animation: none !important;
   }
 }
+
+.crop {
+  margin-top: 0.3rem;
+}
+
+input.color-wide {
+  width: 100%;
+  height: 2.3rem;
+  padding: 2px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+}
+
+.crop {
+  margin-top: 0.3rem;
+}
+
+input.color-wide {
+  width: 100%;
+  height: 2.3rem;
+  padding: 2px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+}
