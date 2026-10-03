@@ -8,11 +8,15 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import type { Pattern } from '../engine/types';
+import type { Pattern, RasterImage } from '../engine/types';
+import type { StripLayout, StripParams } from '../engine/strips';
+import { rasterToCanvas } from '../lib/raster';
 import { edgeAt, foldFlaps, type ReliefParams } from '../engine/relief';
 
 interface Props {
   pattern: Pattern;
+  /** Solo per strip art e lenticolare. */
+  skin?: StripSkin;
 }
 
 const PAPER = new THREE.Color('#f1e9d6');
@@ -103,6 +107,20 @@ class Mesher {
   pos: number[] = [];
   nor: number[] = [];
   col: number[] = [];
+  uvs: number[] = [];
+  /** Quadrilatero con coordinate di texture esplicite (una per vertice, stesso ordine di q). */
+  quadUV(q: V3[], outward: V3, shade: V3, c: THREE.Color, uv: [number, number][]) {
+    const e1 = [q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2]];
+    const e2 = [q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2]];
+    const cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    const flip = cr[0] * outward[0] + cr[1] * outward[1] + cr[2] * outward[2] < 0;
+    for (const k of flip ? [0, 2, 1, 2, 3, 1] : [0, 1, 2, 2, 1, 3]) {
+      this.pos.push(...q[k]);
+      this.nor.push(...shade);
+      this.col.push(c.r, c.g, c.b);
+      this.uvs.push(...uv[k]);
+    }
+  }
   /**
    * Quadrilatero q0 q1 q2 q3 (q0-q1 in alto, q2-q3 in basso) con la faccia
    * visibile dal lato `outward`; `shade` è la normale usata per la luce.
@@ -135,11 +153,23 @@ class Mesher {
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
-    const uv: number[] = [];
-    for (let k = 0; k < this.pos.length; k += 3) uv.push(this.pos[k + 2] * 0.15, this.pos[k + 1] * 0.15);
+    let uv = this.uvs;
+    if (!uv.length) {
+      uv = [];
+      for (let k = 0; k < this.pos.length; k += 3) uv.push(this.pos[k + 2] * 0.15, this.pos[k + 1] * 0.15);
+    }
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     return g;
   }
+}
+
+/** Strisce incollate sul bordo delle pagine (strip art e lenticolare). */
+export interface StripSkin {
+  kind: 'strip' | 'lenticular';
+  a: RasterImage;
+  b?: RasterImage;
+  layout: StripLayout;
+  params: StripParams;
 }
 
 const UP: V3 = [0, 1, 0];
@@ -150,7 +180,7 @@ const DOWN: V3 = [0, -1, 0];
  * Ogni foglio è un solido sottile chiuso: due facce, il bordo del taglio e i
  * gradini orizzontali dove la sporgenza cambia (i tagli), con lo spessore reale.
  */
-function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: number) {
+function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: number, skin?: StripSkin) {
   const N = p.pages.length;
   const H = p.book.heightCm;
   const steps = Math.max(60, Math.round(H / 0.05));
@@ -158,7 +188,10 @@ function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: numb
   const half = thicknessCm / 2;
   const pages = new Mesher();
   const flaps = new Mesher();
+  const stripA = new Mesher();
+  const stripB = new Mesher();
   const rand = rng(1234);
+  const white = new THREE.Color(1, 1, 1);
   const tint = new THREE.Color();
   const P = (i: number, rr: number, y: number, off = 0): V3 => {
     const a = L.angles[i];
@@ -209,8 +242,48 @@ function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: numb
       const pts = poly.map(([rr, y]) => P(i, rr, y, side * (half + Math.max(thicknessCm, 0.004))));
       for (let t = 1; t + 1 < pts.length; t++) flaps.tri([pts[0], pts[t], pts[t + 1]], out, out, flapTint);
     }
+    // strisce incollate sul bordo delle due facce della pagina
+    if (skin) {
+      const s = i - skin.layout.offset;
+      const sl = skin.layout.slices[s];
+      if (sl) {
+        const W = r.pageWidthCm;
+        const sw = Math.min(W, skin.params.widthCm);
+        const yT = Math.max(0, skin.params.marginTopCm);
+        const yB = Math.min(H, H - skin.params.marginBottomCm);
+        if (yB > yT) {
+          const S = skin.layout.source;
+          const iw = skin.a.width;
+          const ih = skin.a.height;
+          const vT = 1 - S.y / ih;
+          const vB = 1 - (S.y + S.h) / ih;
+          const uA: [number, number] = [sl.x0 / iw, sl.x1 / iw];
+          const off = half + 0.003;
+          const quadOn = (m: Mesher, sign: number, u: [number, number], vt: number, vb: number) =>
+            m.quadUV(
+              [P(i, W - sw, yT, sign * off), P(i, W, yT, sign * off), P(i, W - sw, yB, sign * off), P(i, W, yB, sign * off)],
+              sign > 0 ? n : nNeg,
+              sign > 0 ? n : nNeg,
+              white,
+              [
+                [u[0], vt],
+                [u[1], vt],
+                [u[0], vb],
+                [u[1], vb],
+              ],
+            );
+          quadOn(stripA, 1, uA, vT, vB);
+          if (skin.kind === 'lenticular' && skin.b) {
+            const bw = 1 / skin.layout.usedSheets;
+            quadOn(stripB, -1, [s * bw, (s + 1) * bw], 1, 0);
+          } else {
+            quadOn(stripA, -1, uA, vT, vB);
+          }
+        }
+      }
+    }
   }
-  return { pages: pages.geometry(), flaps: flaps.geometry() };
+  return { pages: pages.geometry(), flaps: flaps.geometry(), stripA: stripA.geometry(), stripB: stripB.geometry() };
 }
 
 interface Three {
@@ -230,7 +303,7 @@ interface Three {
   render: () => void;
 }
 
-export default function Book3D({ pattern }: Props) {
+export default function Book3D({ pattern, skin }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const three = useRef<Three | null>(null);
   const [opening, setOpening] = useState(180);
@@ -397,7 +470,9 @@ export default function Book3D({ pattern }: Props) {
       const m = o as THREE.Mesh;
       if (m.isMesh) {
         m.geometry.dispose();
-        (m.material as THREE.Material).dispose();
+        const mat = m.material as THREE.MeshStandardMaterial;
+        if (mat.map && mat.map !== t.paperTex) mat.map.dispose();
+        mat.dispose();
       }
     });
     t.book.clear();
@@ -405,7 +480,7 @@ export default function Book3D({ pattern }: Props) {
     const H = pattern.book.heightCm;
     const N = pattern.pages.length;
     const L = layoutFor(N, opening, paperMm / 10);
-    const { pages, flaps } = buildGeometry(pattern, { pageWidthCm: width, depthCm: depth }, L, paperMm / 10);
+    const { pages, flaps, stripA, stripB } = buildGeometry(pattern, { pageWidthCm: width, depthCm: depth }, L, paperMm / 10, skin);
     const paperMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       side: THREE.FrontSide,
@@ -416,6 +491,32 @@ export default function Book3D({ pattern }: Props) {
     });
     const pagesMesh = new THREE.Mesh(pages, paperMat);
     const flapsMesh = new THREE.Mesh(flaps, paperMat.clone());
+    // strisce di immagine (strip art e lenticolare)
+    if (skin) {
+      const tex = (r: RasterImage) => {
+        const tx = new THREE.CanvasTexture(rasterToCanvas(r));
+        tx.colorSpace = THREE.SRGBColorSpace;
+        tx.anisotropy = t.renderer.capabilities.getMaxAnisotropy();
+        return tx;
+      };
+      const meshes: [THREE.BufferGeometry, RasterImage | undefined][] = [
+        [stripA, skin.a],
+        [stripB, skin.b],
+      ];
+      for (const [g, img] of meshes) {
+        if (!img || !g.getAttribute('position').count) {
+          g.dispose();
+          continue;
+        }
+        const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: tex(img), roughness: 0.7 }));
+        m.castShadow = true;
+        m.receiveShadow = true;
+        t.book.add(m);
+      }
+    } else {
+      stripA.dispose();
+      stripB.dispose();
+    }
     for (const m of [pagesMesh, flapsMesh]) {
       m.castShadow = true;
       m.receiveShadow = true;
@@ -491,7 +592,7 @@ export default function Book3D({ pattern }: Props) {
     );
     frontView();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pattern, opening, depth, width, paperMm, cover]);
+  }, [pattern, skin, opening, depth, width, paperMm, cover]);
 
   useEffect(() => {
     three.current?.render();

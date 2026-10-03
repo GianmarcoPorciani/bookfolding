@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { computePattern, availableSheets } from './engine/pattern';
-import { METHOD_LABELS, type Method, type PatternOptions, type BookSettings, type ShadowMode } from './engine/types';
+import { METHOD_LABELS, type Method, type Pattern, type PatternOptions, type BookSettings, type ShadowMode } from './engine/types';
 import { autoCrop, stripLayout, type StripParams, type CropPercent } from './engine/strips';
 import { ImageDrop } from './components/ImageDrop';
 import { Layers } from './components/Layers';
@@ -145,6 +145,23 @@ export default function App() {
       return { layout: null, error: (e as Error).message };
     }
   }, [imgA, isStrip, book, options.widthMode, options.sheets, strip.emptyStart, strip.emptyEnd, strip.crop]);
+
+  // Schema "vuoto" (nessuna piega) per la vista 3D di strip art e lenticolare
+  const stripPattern = useMemo<Pattern | null>(() => {
+    if (!stripResult?.layout) return null;
+    const N = stripResult.layout.availableSheets;
+    return {
+      method: options.method,
+      book,
+      options,
+      pages: Array.from({ length: N }, (_, k) => ({ page: book.firstPage + 2 * k, sheet: k - stripResult.layout!.offset, marks: [] })),
+      availableSheets: N,
+      usedSheets: stripResult.layout.usedSheets,
+      offset: stripResult.layout.offset,
+      totalMarks: 0,
+      warnings: [],
+    };
+  }, [stripResult, book, options]);
 
   const layerColors = useMemo(
     () => (options.method === 'multilayer' ? layerColorMap(options.layers) : undefined),
@@ -669,15 +686,50 @@ export default function App() {
             options.method === 'lenticular' && !imgB ? (
               <p className="empty">Carica anche l'immagine B per vedere le strisce lenticolari.</p>
             ) : (
-              stripResult?.layout ? (
-                <StripPreview
-                  kind={options.method as 'strip' | 'lenticular'}
-                  a={imgA}
-                  b={imgB}
-                  book={book}
-                  layout={stripResult.layout}
-                  params={strip}
-                />
+              stripResult?.layout && stripPattern ? (
+                <>
+                  <div className="summary">
+                    <div>
+                      <strong>{METHOD_LABELS[options.method]}</strong>
+                    </div>
+                    <nav className="tabs" aria-label="Vista">
+                      {(['anteprima', '3d'] as View[]).map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          className={view === v ? 'tab active' : 'tab'}
+                          aria-pressed={view === v}
+                          onClick={() => setView(v)}
+                        >
+                          {v === '3d' ? '3D' : 'Strisce da stampare'}
+                        </button>
+                      ))}
+                    </nav>
+                  </div>
+                  {view === '3d' ? (
+                    <Suspense fallback={<p className="muted">Carico la vista 3D…</p>}>
+                      <Book3D
+                        pattern={stripPattern}
+                        skin={{
+                          kind: options.method as 'strip' | 'lenticular',
+                          a: imgA.raster,
+                          b: imgB?.raster,
+                          layout: stripResult.layout,
+                          params: strip,
+                        }}
+                      />
+                    </Suspense>
+                  ) : (
+                    <StripPreview
+                      kind={options.method as 'strip' | 'lenticular'}
+                      a={imgA}
+                      b={imgB}
+                      book={book}
+                      layout={stripResult.layout}
+                      params={strip}
+                    />
+                  )}
+                </>
               ) : (
                 <p className="error">{stripResult?.error}</p>
               )
