@@ -880,6 +880,12 @@ input.color-wide {
   box-shadow: 0 0 0 2px var(--ink);
 }
 
+.cover-row select {
+  width: auto;
+  flex: 1 1 10rem;
+  max-width: 16rem;
+}
+
 .cover-row input[type='color'] {
   width: 2.2rem;
   height: 2rem;

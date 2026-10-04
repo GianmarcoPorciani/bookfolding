@@ -172,6 +172,21 @@ export interface StripSkin {
   params: StripParams;
 }
 
+/**
+ * Costola colorata (di solito nero): si colora il bordo dei tratti scelti e le
+ * superfici di taglio fra un tratto e l'altro, così taglio e piega risaltano.
+ */
+export interface Ink {
+  color: string;
+  /** Colora il bordo dei tratti piegati (rientrati). */
+  folded: boolean;
+  /** Colora il bordo dei tratti non piegati (a filo pagina). */
+  unfolded: boolean;
+}
+
+/** Il pennarello sborda sulle facce del foglio: è questa fascia che si vede, il taglio è largo un decimo di mm. */
+const INK_BAND_CM = 0.15;
+
 const UP: V3 = [0, 1, 0];
 const DOWN: V3 = [0, -1, 0];
 
@@ -180,7 +195,7 @@ const DOWN: V3 = [0, -1, 0];
  * Ogni foglio è un solido sottile chiuso: due facce, il bordo del taglio e i
  * gradini orizzontali dove la sporgenza cambia (i tagli), con lo spessore reale.
  */
-function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: number, skin?: StripSkin) {
+function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: number, skin?: StripSkin, ink?: Ink) {
   const N = p.pages.length;
   const H = p.book.heightCm;
   const steps = Math.max(60, Math.round(H / 0.05));
@@ -193,6 +208,11 @@ function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: numb
   const rand = rng(1234);
   const white = new THREE.Color(1, 1, 1);
   const tint = new THREE.Color();
+  const inkColor = new THREE.Color(ink?.color ?? '#000000');
+  const inked = (rr: number) => !!ink && (rr < r.pageWidthCm - 1e-6 ? ink.folded : ink.unfolded);
+  const inkCuts = !!ink && (ink.folded || ink.unfolded);
+  // fuori anche dai lembi ripiegati: il pennarello passa sopra la piega
+  const bandOff = half + Math.max(thicknessCm, 0.004) + 0.002;
   const P = (i: number, rr: number, y: number, off = 0): V3 => {
     const a = L.angles[i];
     return [L.roots[i] + Math.sin(a) * rr + Math.cos(a) * off, H / 2 - y, Math.cos(a) * rr - Math.sin(a) * off];
@@ -222,14 +242,22 @@ function buildGeometry(p: Pattern, r: ReliefParams, L: Layout, thicknessCm: numb
       pages.quad([P(i, 0, y0, half), P(i, rr, y0, half), P(i, 0, y1, half), P(i, rr, y1, half)], n, n, tint);
       pages.quad([P(i, 0, y0, -half), P(i, rr, y0, -half), P(i, 0, y1, -half), P(i, rr, y1, -half)], nNeg, nNeg, tint);
       // bordo del taglio
-      pages.quad([P(i, rr, y0, half), P(i, rr, y0, -half), P(i, rr, y1, half), P(i, rr, y1, -half)], radial, radial, tint);
+      const edge = inked(rr) ? inkColor : tint;
+      pages.quad([P(i, rr, y0, half), P(i, rr, y0, -half), P(i, rr, y1, half), P(i, rr, y1, -half)], radial, radial, edge);
+      if (inked(rr) && rr > 0) {
+        const b = Math.max(0, rr - INK_BAND_CM);
+        pages.quad([P(i, b, y0, bandOff), P(i, rr, y0, bandOff), P(i, b, y1, bandOff), P(i, rr, y1, bandOff)], n, n, inkColor);
+        pages.quad([P(i, b, y0, -bandOff), P(i, rr, y0, -bandOff), P(i, b, y1, -bandOff), P(i, rr, y1, -bandOff)], nNeg, nNeg, inkColor);
+      }
       // gradino in alto: rivolto verso l'alto se il tratto sotto sporge di più
       const prev = j === 0 ? 0 : segs[j - 1].rr;
       if (prev !== rr) {
         const r0 = Math.min(prev, rr);
         const r1 = Math.max(prev, rr);
         const up = rr > prev;
-        pages.quad([P(i, r0, y0, half), P(i, r1, y0, half), P(i, r0, y0, -half), P(i, r1, y0, -half)], up ? UP : DOWN, up ? UP : DOWN, tint);
+        // superficie di taglio
+        const cut = inkCuts ? inkColor : tint;
+        pages.quad([P(i, r0, y0, half), P(i, r1, y0, half), P(i, r0, y0, -half), P(i, r1, y0, -half)], up ? UP : DOWN, up ? UP : DOWN, cut);
       }
       if (j === segs.length - 1)
         pages.quad([P(i, 0, y1, half), P(i, rr, y1, half), P(i, 0, y1, -half), P(i, rr, y1, -half)], DOWN, DOWN, tint);
@@ -311,6 +339,9 @@ export default function Book3D({ pattern, skin }: Props) {
   const [width, setWidth] = useState(14);
   const [paperMm, setPaperMm] = useState(0.1);
   const [cover, setCover] = useState('#2f5d50');
+  const [inkOn, setInkOn] = useState(false);
+  const [inkWhere, setInkWhere] = useState<'folded' | 'unfolded' | 'both'>('folded');
+  const [inkColor, setInkColor] = useState('#000000');
   const [hq, setHq] = useState(() => !/Android|iPhone|iPad/i.test(navigator.userAgent));
   const [error, setError] = useState('');
   const hqRef = useRef(hq);
@@ -480,7 +511,10 @@ export default function Book3D({ pattern, skin }: Props) {
     const H = pattern.book.heightCm;
     const N = pattern.pages.length;
     const L = layoutFor(N, opening, paperMm / 10);
-    const { pages, flaps, stripA, stripB } = buildGeometry(pattern, { pageWidthCm: width, depthCm: depth }, L, paperMm / 10, skin);
+    const ink: Ink | undefined = inkOn
+      ? { color: inkColor, folded: inkWhere !== 'unfolded', unfolded: inkWhere !== 'folded' }
+      : undefined;
+    const { pages, flaps, stripA, stripB } = buildGeometry(pattern, { pageWidthCm: width, depthCm: depth }, L, paperMm / 10, skin, ink);
     const paperMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       side: THREE.FrontSide,
@@ -592,7 +626,7 @@ export default function Book3D({ pattern, skin }: Props) {
     );
     frontView();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pattern, skin, opening, depth, width, paperMm, cover]);
+  }, [pattern, skin, opening, depth, width, paperMm, cover, inkOn, inkWhere, inkColor]);
 
   useEffect(() => {
     three.current?.render();
@@ -649,6 +683,24 @@ export default function Book3D({ pattern, skin }: Props) {
             <input type="color" aria-label="Altro colore" value={cover} onChange={(e) => setCover(e.target.value)} />
           </div>
         </div>
+        {!skin && (
+          <div className="field">
+            <label className="check">
+              <input type="checkbox" checked={inkOn} onChange={(e) => setInkOn(e.target.checked)} />
+              Colora la costola tagliata
+            </label>
+            {inkOn && (
+              <div className="cover-row">
+                <select aria-label="Quali tratti colorare" value={inkWhere} onChange={(e) => setInkWhere(e.target.value as typeof inkWhere)}>
+                  <option value="folded">Tratti piegati</option>
+                  <option value="unfolded">Tratti non piegati</option>
+                  <option value="both">Tutti</option>
+                </select>
+                <input type="color" aria-label="Colore della costola" value={inkColor} onChange={(e) => setInkColor(e.target.value)} />
+              </div>
+            )}
+          </div>
+        )}
         <div className="row-buttons">
           <label className="check">
             <input type="checkbox" checked={hq} onChange={(e) => setHq(e.target.checked)} />
