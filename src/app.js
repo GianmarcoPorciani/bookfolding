@@ -4,6 +4,7 @@ import { disegnaFoto, disegnaLinee } from './render.js';
 import { disegnaPagina } from './pagina.js';
 import { creaPdf } from './pdf.js';
 import { creaExcel } from './excel.js';
+import { trattiPerFoglio } from './sagoma.js';
 
 const $ = (id) => document.getElementById(id);
 const numero = (id) => Number($(id).value) || 0;
@@ -11,6 +12,8 @@ const numero = (id) => Number($(id).value) || 0;
 let img = null;
 let paginaCorrente = 0;
 let stato = null;
+let vista3d = null; // si crea al primo uso: three.js pesa e serve solo qui
+let caricamento3d = null;
 
 function leggiParametri() {
   return {
@@ -56,6 +59,7 @@ function aggiorna() {
     $('scaricaPdf').disabled = $('scaricaExcel').disabled = true;
     $('errore').textContent = e.message;
   }
+  aggiorna3d();
 }
 
 function disegnaAnteprime(layout) {
@@ -85,6 +89,48 @@ function disegnaAnteprime(layout) {
   ctx.strokeRect(da * colW, 1, (a - da) * colW, tela.height - 2);
 
   disegnaPagina($('paginaA4'), 3 * devicePixelRatio, stato, paginaCorrente);
+}
+
+/** Foto ridotta a un pixel per foglio e uno per mm, poi divisa in tratti disegno/sfondo. */
+function calcolaTratti() {
+  const { layout, p } = stato;
+  const mm = Math.max(1, Math.round(p.altezzaCm * 10));
+  const tela = Object.assign(document.createElement('canvas'), { width: layout.fogli, height: mm });
+  const ctx = tela.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, tela.width, tela.height);
+  disegnaFoto(ctx, img, stato.crop, stato.zona, 0, layout.fogli, { x0: 0, y0: 0, colW: 1, cmH: 10 });
+  return trattiPerFoglio(ctx.getImageData(0, 0, tela.width, tela.height).data, layout.fogli, mm, numero('soglia'));
+}
+
+async function aggiorna3d() {
+  const attivo = $('mostra3d').checked;
+  $('valoreApertura').textContent = $('aperturaGradi').value;
+  $('opzioni3d').hidden = !attivo;
+  $('blocco3d').hidden = !(attivo && stato);
+  if (!attivo || !stato) return;
+  try {
+    if (!vista3d) {
+      caricamento3d ??= import('./libro3d.js');
+      const { creaVista } = await caricamento3d;
+      vista3d ??= creaVista($('vista3d'));
+    }
+    vista3d.aggiorna({
+      tratti: calcolaTratti(),
+      altezzaCm: stato.p.altezzaCm,
+      spessoreCm: Math.max(0.3, numero('spessoreCm')),
+      larghezzaCm: Math.max(3, numero('larghezzaCm')),
+      pieghaCm: Math.max(0.2, numero('pieghaCm')),
+      aperturaGradi: numero('aperturaGradi'),
+      fuoriDisegno: $('fuori').value === 'disegno',
+      coloraTaglio: $('coloraTaglio').checked,
+      coloraPieghe: $('coloraPieghe').checked,
+      colore: $('coloreCostola').value,
+    });
+  } catch (e) {
+    caricamento3d = null;
+    $('errore').textContent = `Anteprima 3D non disponibile: ${e.message}`;
+  }
 }
 
 function caricaFoto(file) {

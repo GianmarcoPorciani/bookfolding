@@ -7,6 +7,19 @@
   <link rel="stylesheet" href="style.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/4.2.1/jspdf.umd.min.js" integrity="sha384-qovJwSBbRDPP5cEjCp8S0UP66wrvnjaa60XMOGzTNanrThcrGfXfnZkvgY8N1KT3" crossorigin="anonymous" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js" integrity="sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz" crossorigin="anonymous" defer></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+    },
+    "integrity": {
+      "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js": "sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc",
+      "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.core.js": "sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM",
+      "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/controls/OrbitControls.js": "sha384-LSqANrugPGTgf0eYsQTloqKWy926dOOXo2iZ9y6wLMIDEQoU9AaCLJF1Vcc7oJXr"
+    }
+  }
+  </script>
   <script type="module" src="src/app.js"></script>
 </head>
 <body>
@@ -64,6 +77,29 @@
       </fieldset>
 
       <fieldset>
+        <legend>Anteprima 3D (piega e taglio)</legend>
+        <label class="spunta"><input type="checkbox" id="mostra3d"> Mostra il libro in 3D</label>
+        <div id="opzioni3d" hidden>
+          <label>Sagoma: sensibilità <input type="range" id="soglia" min="20" max="250" value="200"></label>
+          <label>Cosa sporge
+            <select id="fuori">
+              <option value="disegno">Il disegno (si piega lo sfondo)</option>
+              <option value="sfondo">Lo sfondo (si piega il disegno)</option>
+            </select>
+          </label>
+          <label class="spunta"><input type="checkbox" id="coloraTaglio" checked> Colora la costola tagliata</label>
+          <label class="spunta"><input type="checkbox" id="coloraPieghe"> Colora le pieghe</label>
+          <label>Colore della costola <input type="color" id="coloreCostola" value="#000000"></label>
+          <label><span>Apertura del libro: <b id="valoreApertura">180</b>°</span> <input type="range" id="aperturaGradi" min="0" max="330" step="5" value="180"></label>
+          <div class="quattro">
+            <label>Spessore pagine (cm) <input type="number" id="spessoreCm" value="2.5" min="0.3" step="0.1"></label>
+            <label>Larghezza pagina (cm) <input type="number" id="larghezzaCm" value="14" min="3" step="0.5"></label>
+            <label>Profondità piega (cm) <input type="number" id="pieghaCm" value="1" min="0.2" step="0.1"></label>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
         <legend>Stampa</legend>
         <p class="info" id="infoPagine"></p>
         <div class="bottoni">
@@ -84,6 +120,10 @@
         <button type="button" id="succ" aria-label="Pagina successiva">›</button>
       </div>
       <div class="cornice a4"><canvas id="paginaA4"></canvas></div>
+      <div id="blocco3d" hidden>
+        <h2>Libro in 3D <span class="info">trascina per girarlo, rotella o due dita per lo zoom</span></h2>
+        <div class="cornice"><canvas id="vista3d"></canvas></div>
+      </div>
     </section>
   </main>
 </body>
